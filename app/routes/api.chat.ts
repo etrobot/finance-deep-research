@@ -30,7 +30,7 @@ export async function action({ request }: { request: Request }) {
 
     const modelName =
       process.env.OPENROUTER_MODEL ||
-      'google/gemini-2.0-flash-thinking-exp:free';
+      'google/gemini-2.0-flash-lite-preview-02-05:free';
     
     console.log("使用模型:", modelName);
     

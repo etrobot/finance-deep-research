@@ -1,7 +1,7 @@
 import type { MetaFunction } from "@remix-run/node";
 import { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+
 export const meta: MetaFunction = () => {
   return [
     { title: "AI Chat App" },
@@ -9,11 +9,10 @@ export const meta: MetaFunction = () => {
   ];
 };
 
-// 定义消息类型
+// 简化消息类型
 type Message = {
   role: 'user' | 'assistant';
   content: string;
-  reasoning?: string;
 };
 
 export default function Index() {
@@ -21,7 +20,6 @@ export default function Index() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
-  const [showRaw, setShowRaw] = useState(false);
 
   // 发送消息到API
   const sendMessage = async (message: string) => {
@@ -48,20 +46,16 @@ export default function Index() {
       });
       
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || '请求失败');
+        throw new Error('请求失败');
       }
       
       // 处理流式响应
       const reader = response.body?.getReader();
-      if (!reader) throw new Error('无法读取响应流');
+      if (!reader) throw new Error('无法读取响应');
       
-      let assistantMessage = '';
-      let reasoningContent = '';
-      let isReasoningSection = false;
-      
+      let fullContent = '';
       // 为新的助手消息创建一个空对象
-      setMessages(prev => [...prev, { role: 'assistant', content: '', reasoning: '' }]);
+      setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
       
       console.log("开始接收流式响应...");
       
@@ -69,7 +63,7 @@ export default function Index() {
         const { done, value } = await reader.read();
         
         if (done) {
-          console.log("流读取完成，总内容长度:", assistantMessage.length, "思考长度:", reasoningContent.length);
+          console.log("流读取完成，总内容长度:", fullContent.length);
           break;
         }
         
@@ -77,41 +71,15 @@ export default function Index() {
         const chunk = new TextDecoder().decode(value);
         console.log("收到数据块:", chunk.substring(0, 30) + (chunk.length > 30 ? "..." : ""));
         
-        // 检测思考标签
-        if (chunk.includes('<think>')) {
-          isReasoningSection = true;
-          // 移除标签部分，只保留内容
-          const parts = chunk.split('<think>');
-          if (parts[0]) assistantMessage += parts[0];
-          if (parts[1]) reasoningContent += parts[1];
-          continue;
-        }
-        
-        if (chunk.includes('</think>')) {
-          isReasoningSection = false;
-          // 移除标签部分，只保留内容
-          const parts = chunk.split('</think>');
-          if (parts[1]) assistantMessage += parts[1];
-          continue;
-        }
-        
-        // 根据当前状态决定内容归属
-        if (isReasoningSection) {
-          reasoningContent += chunk;
-        } else {
-          assistantMessage += chunk;
-        }
+        fullContent += chunk;
         
         // 更新消息列表
         setMessages(prev => {
           const newMessages = [...prev];
-          if (newMessages.length > 0) {
-            newMessages[newMessages.length - 1] = {
-              ...newMessages[newMessages.length - 1],
-              content: assistantMessage,
-              reasoning: reasoningContent
-            };
-          }
+          newMessages[newMessages.length - 1] = {
+            role: 'assistant',
+            content: fullContent
+          };
           return newMessages;
         });
       }
@@ -139,102 +107,84 @@ export default function Index() {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-gray-100 dark:bg-gray-900">
+    <div className="flex flex-col h-screen bg-gray-100">
       <div className="flex-1 overflow-y-auto p-4">
         <div className="max-w-3xl mx-auto space-y-4">
           {messages.length === 0 && (
-            <div className="text-center text-gray-500 dark:text-gray-400 my-8">
+            <div className="text-center text-gray-500 my-8">
               开始一个新的对话吧！
             </div>
           )}
           
           {messages.map((message, i) => (
-            <div
-              key={i}
-              className={`flex flex-col ${
-                message.role === 'user' ? 'items-end' : 'items-start'
-              }`}
-            >
-              <div className="mb-1 text-xs text-gray-500 dark:text-gray-400">
+            <div key={i} className={`flex flex-col ${message.role === 'user' ? 'items-end' : 'items-start'}`}>
+              <div className="mb-1 text-xs text-gray-500">
                 {message.role === 'user' ? '你' : 'AI助手'}
               </div>
-              
-              {/* 显示思考内容，放在回答上方 */}
-              {message.reasoning && message.role === 'assistant' && (
-                <details className="mt-2 mb-2 w-[85%]" open>
-                  <summary className="cursor-pointer text-xs text-gray-700 dark:text-gray-300 font-medium">
-                    思考过程
+              {message.role === 'assistant' && message.content.includes('<think>') && (
+                <details className="mb-2 w-full max-w-[85%]">
+                  <summary className="cursor-pointer text-sm text-gray-500 hover:text-gray-700">
+                    显示思考过程
                   </summary>
-                  <div className="mt-2 text-xs rounded-lg px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 overflow-x-auto">
-                    <pre className="whitespace-pre-wrap">{message.reasoning}</pre>
+                  <div className="mt-2 rounded-lg border bg-gray-50 px-4 py-2 text-sm text-gray-600">
+                    {message.content
+                      .split(/<\/?think>/)
+                      .filter((part, i) => i % 2 === 1)
+                      .map((thought, j) => (
+                        <div key={j} className="mb-2 whitespace-pre-wrap">{thought.trim()}</div>
+                      ))}
                   </div>
                 </details>
               )}
-              
-              <div className="flex justify-end w-full mb-1">
-                <button 
-                  onClick={() => setShowRaw(!showRaw)}
-                  className="text-xs text-gray-500 hover:text-gray-700"
-                >
-                  {showRaw ? '显示格式化内容' : '显示原始内容'}
-                </button>
-              </div>
-              
-              <div
-                className={`rounded-lg px-4 py-2 max-w-[85%] ${
-                  message.role === 'user'
-                    ? 'bg-blue-500 text-white'
-                    : 'bg-white dark:bg-gray-800 dark:text-white border dark:border-gray-700'
-                }`}
-              >
+              <div className={`rounded-lg px-4 py-2 max-w-[85%] ${
+                message.role === 'user'
+                  ? 'bg-blue-500 text-white'
+                  : 'bg-white border'
+              }`}>
                 {message.role === 'assistant' ? (
-                  showRaw ? (
-                    <pre className="whitespace-pre-wrap text-xs overflow-auto">
-                      {message.content || (isLoading ? '思考中...' : '')}
-                    </pre>
-                  ) : (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {message.content || (isLoading ? '思考中...' : '')}
-                    </ReactMarkdown>
-                  )
+                  <ReactMarkdown
+                    components={{
+                      p: ({children}) => <p className="prose prose-sm max-w-none dark:prose-invert">{children}</p>
+                    }}
+                  >
+                    {message.content.split(/<\/?think>/).filter((part, i) => i % 2 === 0).join('').trim()}
+                  </ReactMarkdown>
                 ) : (
-                  message.content
+                  <ReactMarkdown
+                    components={{
+                      p: (props) => <p {...props} className="prose prose-sm max-w-none dark:prose-invert" />,
+                    }}
+                  >
+                    {message.content || (isLoading ? '思考中...' : '')}
+                  </ReactMarkdown>
                 )}
               </div>
             </div>
           ))}
           
-          {isLoading && messages[messages.length - 1]?.role !== 'assistant' && (
-            <div className="flex justify-start">
-              <div className="rounded-lg px-4 py-2 bg-white dark:bg-gray-800 dark:text-white">
-                正在思考...
-              </div>
-            </div>
-          )}
-          
           {error && (
             <div className="flex justify-center">
               <div className="rounded-lg px-4 py-2 bg-red-500 text-white">
-                错误: {error.message || "发生未知错误"}
+                错误: {error.message}
               </div>
             </div>
           )}
         </div>
       </div>
       
-      <form onSubmit={handleSubmit} className="p-4 border-t dark:border-gray-700 bg-white dark:bg-gray-800">
+      <form onSubmit={handleSubmit} className="p-4 border-t bg-white">
         <div className="max-w-3xl mx-auto flex gap-4">
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="输入消息..."
-            className="flex-1 rounded-lg px-4 py-2 bg-white dark:bg-gray-800 dark:text-white border dark:border-gray-700"
+            className="flex-1 rounded-lg px-4 py-2 border"
             disabled={isLoading}
           />
           <button
             type="submit"
             disabled={isLoading || !input.trim()}
-            className="bg-blue-500 text-white px-4 py-2 rounded-lg disabled:opacity-50 transition-opacity"
+            className="bg-blue-500 text-white px-4 py-2 rounded-lg disabled:opacity-50"
           >
             {isLoading ? "发送中..." : "发送"}
           </button>

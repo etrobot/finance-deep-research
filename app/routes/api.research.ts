@@ -86,11 +86,7 @@ async function parseStreamingJson(fullStream: any, encoder: any, writer: any) {
       }
     }
   }
-  
-  if (isReasoningActive) {
-    await writer.write(encoder.encode('</think>\n\n'));
-  }
-  
+
   return jsonResult;
 }
 
@@ -112,11 +108,9 @@ function removeJsonMarkdown(text: string) {
 
 // 生成SERP查询
 async function generateSerpQueries(query: string, numQueries = 3, learnings: string[] = [], writer: any, encoder: any) {
-  const modelName = process.env.OPENROUTER_MODEL || 'google/gemini-2.0-flash-thinking-exp:free';
+  const modelName = process.env.OPENROUTER_MODEL || 'google/gemini-2.0-flash-lite-preview-02-05:free';
   const model = openrouter.languageModel(modelName);
-  
-  await writer.write(encoder.encode('<think>正在生成搜索查询...</think>\n\n'));
-  
+    
   const systemPrompt = "你是一个专业的研究助手，帮助用户深入研究各种主题。请根据用户的提示，生成搜索引擎查询以帮助研究该主题。";
   
   const promptText = `给定以下用户提示，生成一系列bing搜索引擎查询来研究该主题。最多返回${numQueries}个查询，但如果原始提示清晰明确，可以返回更少的查询。确保每个查询都是独特的，彼此不相似。
@@ -133,8 +127,7 @@ ${learnings.join('\n')}` : ''}
       "query": "bing搜索引擎查询(如果是金融类的,请指定相关的site,比如同花顺10jqka.com.cn或东方财富www.eastmoney.com等)",
       "researchGoal": "此查询的研究目标，以及如何深入研究"
     }
-  ]
-}`;
+  ]}`;
 
   const result = await streamText({
     model,
@@ -145,25 +138,19 @@ ${learnings.join('\n')}` : ''}
   const queries = await parseStreamingJson(result.fullStream, encoder, writer);
   
   if (queries && queries.queries && Array.isArray(queries.queries)) {
-    await writer.write(encoder.encode(`<think>生成了 ${queries.queries.length} 个搜索查询</think>\n\n`));
     return queries.queries;
   }
-  
-  // 如果解析失败，返回一个默认查询
-  await writer.write(encoder.encode('<think>无法解析查询结果，使用默认查询</think>\n\n'));
+
   return [{ query, researchGoal: "研究用户提供的原始查询" }];
 }
 
 // 处理搜索结果
 async function processSerpResult(query: string, results: any, numLearnings = 3, writer: any, encoder: any) {
   if (!results || results.length === 0) {
-    await writer.write(encoder.encode(`<think>查询 "${query}" 没有找到结果</think>\n\n`));
     return { learnings: [], followUpQuestions: [] };
   }
-  
-  await writer.write(encoder.encode(`<think>分析搜索结果: ${query} (找到 ${results.length} 条内容)</think>\n\n`));
-  
-  const modelName = process.env.OPENROUTER_MODEL || 'google/gemini-2.0-flash-thinking-exp:free';
+    
+  const modelName = process.env.OPENROUTER_MODEL || 'google/gemini-2.0-flash-lite-preview-02-05:free';
   const model = openrouter.languageModel(modelName);
   
   const systemPrompt = "你是一个专业研究助手，擅长从搜索结果中提取有价值的信息。";
@@ -189,10 +176,6 @@ ${contents.join('\n\n')}
   const processedResult = await parseStreamingJson(result.fullStream, encoder, writer);
   
   if (processedResult && processedResult.learnings && Array.isArray(processedResult.learnings)) {
-    // 显示发现
-    if (processedResult.learnings.length > 0) {
-      await writer.write(encoder.encode(`发现:\n${processedResult.learnings.map((l: string) => `- ${l}`).join('\n')}\n\n`));
-    }
     
     return {
       learnings: processedResult.learnings || [],
@@ -205,69 +188,76 @@ ${contents.join('\n\n')}
 
 // 生成最终报告
 async function writeFinalReport(prompt: string, learnings: any, visitedUrls: any, writer: any, encoder: any) {
-  await writer.write(encoder.encode('<think>生成最终报告...</think>\n\n'));
-  console.log("开始生成最终报告，学习成果数量:", learnings.length);
-  
-  const modelName = process.env.OPENROUTER_MODEL || 'google/gemini-2.0-flash-thinking-exp:free';
+  console.log("开始生成最终报告，输入数据:", {
+    promptLength: prompt.length,
+    learningsCount: learnings.length,
+    urlsCount: visitedUrls.length
+  });
+
+  const modelName = process.env.OPENROUTER_MODEL || 'google/gemini-2.0-flash-lite-preview-02-05:free';
   const model = openrouter.languageModel(modelName);
   
-  const systemPrompt = "你是一个专业的研究助手，擅长基于收集的信息撰写详细报告。";
+  const systemPrompt = "你是一个专业的研究助手，擅长基于收集的信息撰写详细的研究报告。请确保报告内容完整、结构清晰。";
   
-  const promptText = `基于以下用户提示，使用研究中的发现撰写一份最终报告。请尽可能详细，目标至少3页以上，包含研究中的所有发现。
-  
+  const promptText = `基于以下用户提示和研究发现，撰写一份详尽的研究报告。要求：
+1. 报告篇幅至少3页
+2. 包含所有重要发现
+3. 使用清晰的标题和小节
+4. 添加具体的数据支持
+5. 确保内容逻辑连贯
+
 用户提示: ${prompt}
 
-以下是之前研究的所有发现:
+研究发现:
+${learnings.map((l: string, i: number) => `${i + 1}. ${l}`).join('\n')}
 
-${learnings.join('\n\n')}
+请使用Markdown格式撰写报告，包含以下结构：
+1. 研究概述
+2. 主要发现
+3. 详细分析
+4. 结论和建议`;
 
-请使用Markdown格式撰写报告。`;
-
-  const result = await streamText({
-    model,
-    system: systemPrompt,
-    prompt: promptText,
-  });
+  console.log("准备调用AI模型生成报告...");
   
-  // 在发送报告内容前添加明确的标记
-  await writer.write(encoder.encode('\n\n--- 研究报告开始 ---\n\n'));
-  
-  // 直接流式输出报告内容
-  let reportContent = '';
-  let isReasoningActive = false;
-  
-  for await (const part of result.fullStream) {
-    if (part.type === "reasoning" && part.textDelta) {
-      if (!isReasoningActive) {
-        await writer.write(encoder.encode('<think>\n'));
-        isReasoningActive = true;
+  try {
+    const result = await streamText({
+      model,
+      system: systemPrompt,
+      prompt: promptText,
+    });
+    
+    console.log("AI模型响应成功，开始处理输出流");
+    
+    let isReasoningActive = false;
+    
+    for await (const part of result.fullStream) {
+      if (part.type === "reasoning" && part.textDelta) {
+        if (!isReasoningActive) {
+          await writer.write(encoder.encode('<think>\n'));
+          isReasoningActive = true;
+        }
+        await writer.write(encoder.encode(part.textDelta));
+      } 
+      else if (part.type === "text-delta" && part.textDelta) {
+        if (isReasoningActive) {
+          await writer.write(encoder.encode('</think>\n\n'));
+          isReasoningActive = false;
+        }
+        
+        // 直接写入流，而不是累积到reportContent中
+        await writer.write(encoder.encode(part.textDelta));
       }
-      await writer.write(encoder.encode(part.textDelta));
-    } 
-    else if (part.type === "text-delta" && part.textDelta) {
-      if (isReasoningActive) {
-        await writer.write(encoder.encode('</think>\n\n'));
-        isReasoningActive = false;
-      }
-      
-      reportContent += part.textDelta;
-      await writer.write(encoder.encode(part.textDelta));
-      console.log("报告内容流式输出:", part.textDelta.substring(0, 30) + (part.textDelta.length > 30 ? "..." : ""));
     }
+    
+    // 添加参考来源
+    const urlsSection = `\n\n## 参考来源\n${visitedUrls.map((url: string) => `- ${url}`).join('\n')}`;
+    await writer.write(encoder.encode(urlsSection));
+    
+    return; // 不需要返回内容，因为已经写入流中
+  } catch (error) {
+    console.error("生成报告时发生错误:", error);
+    throw error;
   }
-  
-  if (isReasoningActive) {
-    await writer.write(encoder.encode('</think>\n\n'));
-  }
-  
-  // 添加来源URL部分
-  const urlsSection = `\n\n## 参考来源\n\n${visitedUrls.map((url: string) => `- ${url}`).join('\n')}`;
-  await writer.write(encoder.encode(urlsSection));
-  
-  await writer.write(encoder.encode('\n\n--- 研究报告结束 ---\n\n'));
-  
-  console.log("最终报告生成完成，总长度:", reportContent.length + urlsSection.length);
-  return reportContent + urlsSection;
 }
 
 // 深度研究函数
@@ -296,7 +286,6 @@ async function deepResearch(
     // 处理每个搜索查询
     for (const serpQuery of serpQueries) {
       try {
-        await writer.write(encoder.encode(`<think>正在搜索: ${serpQuery.query}</think>\n\n`));
         
         // 执行搜索
         const searchResults = await bingSearch(serpQuery.query, 5);
@@ -320,9 +309,7 @@ async function deepResearch(
         // 如果有后续问题且未达到最大深度，继续深入研究
         if (processedResults.followUpQuestions.length > 0 && currentDepth < depth - 1) {
           const newBreadth = Math.ceil(breadth / 2);
-          
-          await writer.write(encoder.encode(`<think>深入研究，广度: ${newBreadth}，深度: ${currentDepth + 1}</think>\n\n`));
-          
+                    
           const nextQuery = `
 前一个研究目标: ${serpQuery.researchGoal}
 后续研究方向: ${processedResults.followUpQuestions.map((q: string) => `\n- ${q}`).join('')}
@@ -346,18 +333,15 @@ async function deepResearch(
         }
       } catch (error) {
         console.error(`处理查询时出错: ${serpQuery.query}:`, error);
-        await writer.write(encoder.encode(`<think>处理查询时出错: ${serpQuery.query}: ${error instanceof Error ? error.message : String(error)}</think>\n\n`));
       }
     }
     
     // 去重
     allLearnings = [...new Set(allLearnings)];
     allUrls = [...new Set(allUrls)];
-    
     return { learnings: allLearnings, visitedUrls: allUrls };
   } catch (error) {
     console.error("深度研究过程出错:", error);
-    await writer.write(encoder.encode(`<think>深度研究过程出错: ${error instanceof Error ? error.message : String(error)}</think>\n\n`));
     return { learnings, visitedUrls };
   }
 }
@@ -401,8 +385,9 @@ export async function action({ request }: { request: Request }) {
     
     // 在后台执行研究过程
     (async () => {
-      try {
-        await writer.write(encoder.encode(`开始研究: "${query}"\n\n`));
+      try {        
+        // 在开始研究时输出think标签
+        await writer.write(encoder.encode('<think>\n'));
         
         // 执行深度研究
         const research = await deepResearch(
@@ -417,8 +402,8 @@ export async function action({ request }: { request: Request }) {
         
         console.log("深度研究完成，发现数量:", research.learnings.length, "URL数量:", research.visitedUrls.length);
         
-        // 生成最终报告
-        await writer.write(encoder.encode(`## 研究报告: ${query}\n\n`));
+        // 在完成研究后，关闭think标签
+        await writer.write(encoder.encode('</think>\n\n'));
         
         await writeFinalReport(
           query,
@@ -432,7 +417,6 @@ export async function action({ request }: { request: Request }) {
         await writer.close();
       } catch (error) {
         console.error("处理研究时出错:", error);
-        await writer.write(encoder.encode(`\n\n处理研究时出错: ${error instanceof Error ? error.message : String(error)}`));
         writer.abort(error);
       }
     })();

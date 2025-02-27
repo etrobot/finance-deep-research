@@ -49,7 +49,7 @@ pnpm install
 ```env
 OPENROUTER_API_KEY=你的OpenRouter_API_Key
 BING_SEARCH_API_KEY=你的Bing_Search_API_Key
-OPENROUTER_MODEL=使用的OpenRouter模型（例如：google/gemini-2.0-flash-thinking-exp:free）
+OPENROUTER_MODEL=使用的OpenRouter模型（例如：google/gemini-2.0-flash-lite-preview-02-05:free）
 ```
 
 ### 运行开发服务器
