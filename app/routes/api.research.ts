@@ -1,5 +1,5 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { streamText } from 'ai';
+import { streamText,createDataStream } from 'ai';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -52,43 +52,6 @@ async function bingSearch(query: string, limit = 5) {
   }
 }
 
-// 解析流式JSON输出
-async function parseStreamingJson(fullStream: any, encoder: any, writer: any) {
-  let rawText = '';
-  let jsonResult = null;
-  let isReasoningActive = false;
-  
-  for await (const part of fullStream) {
-    if (part.type === "reasoning" && part.textDelta) {
-      if (!isReasoningActive) {
-        await writer.write(encoder.encode('<think>\n'));
-        isReasoningActive = true;
-      }
-      await writer.write(encoder.encode(part.textDelta));
-    } 
-    else if (part.type === "text-delta" && part.textDelta) {
-      if (isReasoningActive) {
-        await writer.write(encoder.encode('</think>\n\n'));
-        isReasoningActive = false;
-      }
-      
-      rawText += part.textDelta;
-      await writer.write(encoder.encode(part.textDelta));
-      
-      // 尝试解析JSON
-      try {
-        // 移除可能的markdown格式
-        const cleanText = removeJsonMarkdown(rawText);
-        const parsed = JSON.parse(cleanText);
-        jsonResult = parsed;
-      } catch (e) {
-        // 解析失败，继续收集更多文本
-      }
-    }
-  }
-
-  return jsonResult;
-}
 
 // 移除JSON的markdown格式
 function removeJsonMarkdown(text: string) {
@@ -107,7 +70,16 @@ function removeJsonMarkdown(text: string) {
 }
 
 // 生成SERP查询
-async function generateSerpQueries(query: string, numQueries = 3, learnings: string[] = [], writer: any, encoder: any) {
+interface SearchQuery {
+  query: string;
+  researchGoal: string;
+}
+
+interface QueriesResponse {
+  queries: SearchQuery[];
+}
+
+async function generateSerpQueries(query: string, numQueries = 3, learnings: string[] = [], dataStream: any, encoder: any) {
   const modelName = process.env.OPENROUTER_MODEL || 'google/gemini-2.0-flash-lite-preview-02-05:free';
   const model = openrouter.languageModel(modelName);
     
@@ -129,23 +101,34 @@ ${learnings.join('\n')}` : ''}
     }
   ]}`;
 
+  let parsedQueries: QueriesResponse = { queries: [] };
+
   const result = await streamText({
     model,
     system: systemPrompt,
     prompt: promptText,
+    onFinish: (result: any) => {
+      try {
+        const cleanText = removeJsonMarkdown(result.content);
+        parsedQueries = JSON.parse(cleanText) as QueriesResponse;
+        console.log('JSON解析成功，结果:', JSON.stringify(parsedQueries).slice(0, 100) + '...');
+      } catch (e) {
+        console.error('JSON解析失败:', e);
+      }
+    }
   });
   
-  const queries = await parseStreamingJson(result.fullStream, encoder, writer);
-  
-  if (queries && queries.queries && Array.isArray(queries.queries)) {
-    return queries.queries;
+  result.mergeIntoDataStream(dataStream, { sendReasoning: true });
+
+  if (parsedQueries && Array.isArray(parsedQueries.queries)) {
+    return parsedQueries.queries;
   }
 
   return [{ query, researchGoal: "研究用户提供的原始查询" }];
 }
 
 // 处理搜索结果
-async function processSerpResult(query: string, results: any, numLearnings = 3, writer: any, encoder: any) {
+async function processSerpResult(query: string, results: any, numLearnings = 3, dataStream: any, encoder: any) {
   if (!results || results.length === 0) {
     return { learnings: [], followUpQuestions: [] };
   }
@@ -167,27 +150,34 @@ ${contents.join('\n\n')}
   "followUpQuestions": ["后续问题1", "后续问题2", "后续问题3"]
 }`;
 
+  let processedResult = { learnings: [], followUpQuestions: [] };
+
   const result = await streamText({
     model,
     system: systemPrompt,
     prompt: promptText,
+    onFinish: async (result: any) => {
+      try {
+        const cleanText = removeJsonMarkdown(result.content);
+        const parsed = JSON.parse(cleanText);
+        processedResult = {
+          learnings: parsed.learnings || [],
+          followUpQuestions: parsed.followUpQuestions || []
+        };
+        console.log('JSON解析成功，结果:', JSON.stringify(processedResult).slice(0, 100) + '...');
+      } catch (e) {
+        console.error('JSON解析失败:', e);
+      }
+    }
   });
   
-  const processedResult = await parseStreamingJson(result.fullStream, encoder, writer);
+  // result.mergeIntoDataStream(dataStream, { sendReasoning: true });
   
-  if (processedResult && processedResult.learnings && Array.isArray(processedResult.learnings)) {
-    
-    return {
-      learnings: processedResult.learnings || [],
-      followUpQuestions: processedResult.followUpQuestions || []
-    };
-  }
-  
-  return { learnings: [], followUpQuestions: [] };
+  return processedResult;
 }
 
 // 生成最终报告
-async function writeFinalReport(prompt: string, learnings: any, visitedUrls: any, writer: any, encoder: any) {
+async function writeFinalReport(prompt: string, learnings: any, visitedUrls: any, dataStream: any, encoder: any) {
   console.log("开始生成最终报告，输入数据:", {
     promptLength: prompt.length,
     learningsCount: learnings.length,
@@ -225,33 +215,13 @@ ${learnings.map((l: string, i: number) => `${i + 1}. ${l}`).join('\n')}
       system: systemPrompt,
       prompt: promptText,
     });
-    
+    result.mergeIntoDataStream(dataStream, { sendReasoning: true });
     console.log("AI模型响应成功，开始处理输出流");
-    
-    let isReasoningActive = false;
-    
-    for await (const part of result.fullStream) {
-      if (part.type === "reasoning" && part.textDelta) {
-        if (!isReasoningActive) {
-          await writer.write(encoder.encode('<think>\n'));
-          isReasoningActive = true;
-        }
-        await writer.write(encoder.encode(part.textDelta));
-      } 
-      else if (part.type === "text-delta" && part.textDelta) {
-        if (isReasoningActive) {
-          await writer.write(encoder.encode('</think>\n\n'));
-          isReasoningActive = false;
-        }
         
-        // 直接写入流，而不是累积到reportContent中
-        await writer.write(encoder.encode(part.textDelta));
-      }
-    }
     
     // 添加参考来源
     const urlsSection = `\n\n## 参考来源\n${visitedUrls.map((url: string) => `- ${url}`).join('\n')}`;
-    await writer.write(encoder.encode(urlsSection));
+    dataStream.writeData({ type: 'text', content: urlsSection });
     
     return; // 不需要返回内容，因为已经写入流中
   } catch (error) {
@@ -263,11 +233,11 @@ ${learnings.map((l: string, i: number) => `${i + 1}. ${l}`).join('\n')}
 // 深度研究函数
 async function deepResearch(
   query: string,
-  breadth = 3,
-  depth = 2,
+  breadth = 1,
+  depth = 1,
   learnings: string[] = [],
   visitedUrls: string[] = [],
-  writer: any,
+  dataStream: any,
   encoder: any,
   currentDepth = 0
 ) {
@@ -278,7 +248,7 @@ async function deepResearch(
     }
     
     // 生成搜索查询
-    const serpQueries = await generateSerpQueries(query, breadth, learnings, writer, encoder);
+    const serpQueries = await generateSerpQueries(query, breadth, learnings, dataStream, encoder);
     
     let allLearnings = [...learnings];
     let allUrls = [...visitedUrls];
@@ -299,7 +269,7 @@ async function deepResearch(
           serpQuery.query,
           searchResults,
           3,
-          writer,
+          dataStream,
           encoder
         );
         
@@ -322,7 +292,7 @@ async function deepResearch(
             depth,
             allLearnings,
             allUrls,
-            writer,
+            dataStream,
             encoder,
             currentDepth + 1
           );
@@ -349,80 +319,68 @@ async function deepResearch(
 export async function action({ request }: { request: Request }) {
   try {
     const body = await request.json();
-    const { messages, breadth = 3, depth = 2 } = body;
+    const { messages, breadth = 1, depth = 1 } = body;
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return new Response(
         JSON.stringify({ error: "聊天消息是必需的" }),
-        {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        }
+        { status: 400, headers: { "Content-Type": "application/json" } }
       );
     }
 
-    // 从消息历史中提取最后一条用户消息作为查询
     const lastUserMessage = messages.filter(m => m.role === 'user').pop();
     
     if (!lastUserMessage || !lastUserMessage.content) {
       return new Response(
         JSON.stringify({ error: "未找到有效的用户查询" }),
-        {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        }
+        { status: 400, headers: { "Content-Type": "application/json" } }
       );
     }
 
     const query = lastUserMessage.content;
     console.log("接收到的研究查询:", query);
     console.log("研究广度:", breadth, "研究深度:", depth);
-    
-    // 创建一个新的ReadableStream来处理研究过程
-    const responseStream = new TransformStream();
-    const writer = responseStream.writable.getWriter();
-    const encoder = new TextEncoder();
-    
-    // 在后台执行研究过程
-    (async () => {
-      try {        
-        // 在开始研究时输出think标签
-        await writer.write(encoder.encode('<think>\n'));
-        
-        // 执行深度研究
-        const research = await deepResearch(
-          query,
-          breadth,
-          depth,
-          [],
-          [],
-          writer,
-          encoder
-        );
-        
-        console.log("深度研究完成，发现数量:", research.learnings.length, "URL数量:", research.visitedUrls.length);
-        
-        // 在完成研究后，关闭think标签
-        await writer.write(encoder.encode('</think>\n\n'));
-        
-        await writeFinalReport(
-          query,
-          research.learnings,
-          research.visitedUrls,
-          writer,
-          encoder
-        );
-        
-        console.log("研究流程全部完成，关闭写入器");
-        await writer.close();
-      } catch (error) {
-        console.error("处理研究时出错:", error);
-        writer.abort(error);
-      }
-    })();
 
-    // 返回流式响应
-    return new Response(responseStream.readable, {
+    const dataStream = createDataStream({
+      async execute(dataStream) {
+        try {
+          console.log("开始研究流程");
+          
+          // 执行深度研究
+          const research = await deepResearch(
+            query,
+            breadth,
+            depth,
+            [],
+            [],
+            dataStream,  // 直接传入dataStream
+            new TextEncoder()
+          );
+
+          console.log("深度研究完成，发现数量:", research.learnings.length);
+
+          // 生成最终报告
+          await writeFinalReport(
+            query,
+            research.learnings,
+            research.visitedUrls,
+            dataStream,  // 直接传入dataStream
+            new TextEncoder()
+          );
+
+          console.log("研究流程全部完成");
+        } catch (error) {
+          console.error("处理研究流程时出错:", error);
+          throw error;
+        }
+      },
+      onError: (error: any) => {
+        console.error("数据流处理出错:", error);
+        return `处理请求时出错: ${error.message}`;
+      },
+    });
+
+    return new Response(dataStream, {
       headers: {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',

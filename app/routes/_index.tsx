@@ -1,6 +1,7 @@
 import type { MetaFunction } from "@remix-run/node";
 import { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { useChat } from '@ai-sdk/react';
 
 export const meta: MetaFunction = () => {
   return [
@@ -9,105 +10,86 @@ export const meta: MetaFunction = () => {
   ];
 };
 
-// 简化消息类型
-type Message = {
-  role: 'user' | 'assistant';
-  content: string;
-};
 
-export default function Index() {
-  const [messages, setMessages] = useState<Message[]>([]);
+// 封装聊天组件
+function Chat() {
   const [input, setInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
-  // 发送消息到API
-  const sendMessage = async (message: string) => {
+  // 使用 useChat hook 替代直接 fetch
+  const { data,append, messages, status } = useChat({
+    api: '/api/research',
+    onError: (err) => {
+      console.error("聊天请求出错:", err);
+      // 添加更详细的错误日志
+      if (err instanceof Error) {
+        console.error("错误详情:", {
+          message: err.message,
+          stack: err.stack,
+          name: err.name
+        });
+      } else {
+        console.error("非标准错误对象:", err);
+      }
+      setError(err instanceof Error ? err : new Error(String(err)));
+    },
+    onFinish: (message) => {
+      console.log("聊天响应完成，消息详情:", {
+        message
+      });
+    }
+  });
+
+  const sendMessage = (message: string) => {
     if (!message.trim()) return;
     
-    // 添加用户消息到聊天记录
-    const userMessage: Message = { role: 'user', content: message };
-    setMessages(prev => [...prev, userMessage]);
-    setInput('');
-    setIsLoading(true);
+    console.log("准备发送消息:", message);
+    console.log("当前状态:", status);
     setError(null);
     
     try {
-      console.log("发送消息:", message);
-      
-      const response = await fetch('/api/research', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          messages: [...messages, userMessage] // 发送整个对话历史
-        }),
+      // 添加更详细的请求日志
+      console.log("发送消息前的状态:", {
+        messageContent: message,
+        currentStatus: status,
+        currentMessages: messages
       });
       
-      if (!response.ok) {
-        throw new Error('请求失败');
-      }
+      append({
+        role: 'user',
+        content: message
+      });
       
-      // 处理流式响应
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('无法读取响应');
-      
-      let fullContent = '';
-      // 为新的助手消息创建一个空对象
-      setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
-      
-      console.log("开始接收流式响应...");
-      
-      while (true) {
-        const { done, value } = await reader.read();
-        
-        if (done) {
-          console.log("流读取完成，总内容长度:", fullContent.length);
-          break;
-        }
-        
-        // 将二进制数据转换为文本
-        const chunk = new TextDecoder().decode(value);
-        console.log("收到数据块:", chunk.substring(0, 30) + (chunk.length > 30 ? "..." : ""));
-        
-        fullContent += chunk;
-        
-        // 更新消息列表
-        setMessages(prev => {
-          const newMessages = [...prev];
-          newMessages[newMessages.length - 1] = {
-            role: 'assistant',
-            content: fullContent
-          };
-          return newMessages;
-        });
-      }
+      console.log("消息发送成功");
     } catch (err) {
       console.error("发送消息时出错:", err);
-      setError(err instanceof Error ? err : new Error(String(err)));
+      console.error("错误详细信息:", {
+        error: err,
+        errorType: typeof err,
+        errorString: String(err)
+      });
       
-      // 如果出错，移除最后一条未完成的助手消息
-      setMessages(prev => 
-        prev[prev.length - 1]?.role === 'assistant' && prev[prev.length - 1]?.content === '' 
-          ? prev.slice(0, -1) 
-          : prev
-      );
-    } finally {
-      setIsLoading(false);
+      const errorMessage = err instanceof Error 
+        ? `${err.message}\n${err.stack}` 
+        : String(err);
+      setError(new Error(`发送消息失败: ${errorMessage}`));
     }
   };
 
   // 处理表单提交
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (input.trim() && !isLoading) {
+    if (input.trim() && status !== 'streaming' && status !== 'submitted') {
       sendMessage(input);
+      setInput('');
     }
   };
 
+  // 判断是否正在加载
+  const isLoading = status === 'streaming' || status === 'submitted';
+
   return (
-    <div className="flex flex-col h-screen bg-gray-100">
+    <div className="flex flex-col h-screen">
       <div className="flex-1 overflow-y-auto p-4">
         <div className="max-w-3xl mx-auto space-y-4">
           {messages.length === 0 && (
@@ -121,46 +103,43 @@ export default function Index() {
               <div className="mb-1 text-xs text-gray-500">
                 {message.role === 'user' ? '你' : 'AI助手'}
               </div>
-              {message.role === 'assistant' && message.content.includes('<think>') && (
+              {message.role === 'assistant' && (
                 <details className="mb-2 w-full max-w-[85%]">
-                  <summary className="cursor-pointer text-sm text-gray-500 hover:text-gray-700">
-                    显示思考过程
+                  <summary className="cursor-pointer text-sm hover:text-gray-700">
+                    显示思考
                   </summary>
-                  <div className="mt-2 rounded-lg border bg-gray-50 px-4 py-2 text-sm text-gray-600">
-                    {message.content
-                      .split(/<\/?think>/)
-                      .filter((part, i) => i % 2 === 1)
-                      .map((thought, j) => (
-                        <div key={j} className="mb-2 whitespace-pre-wrap">{thought.trim()}</div>
-                      ))}
+                  <div className="mt-2 rounded-lg border px-4 py-2 text-sm text-gray-600">
+                    {message.reasoning}
+                    {/* {JSON.stringify(data)} */}
                   </div>
                 </details>
               )}
               <div className={`rounded-lg px-4 py-2 max-w-[85%] ${
                 message.role === 'user'
                   ? 'bg-blue-500 text-white'
-                  : 'bg-white border'
+                  : 'border'
               }`}>
-                {message.role === 'assistant' ? (
-                  <ReactMarkdown
-                    components={{
-                      p: ({children}) => <p className="prose prose-sm max-w-none dark:prose-invert">{children}</p>
-                    }}
-                  >
-                    {message.content.split(/<\/?think>/).filter((part, i) => i % 2 === 0).join('').trim()}
-                  </ReactMarkdown>
-                ) : (
-                  <ReactMarkdown
-                    components={{
-                      p: (props) => <p {...props} className="prose prose-sm max-w-none dark:prose-invert" />,
-                    }}
-                  >
-                    {message.content || (isLoading ? '思考中...' : '')}
-                  </ReactMarkdown>
-                )}
+                <ReactMarkdown
+                  components={{
+                    p: ({children}) => <p className="prose prose-sm max-w-none dark:prose-invert">{children}</p>
+                  }}
+                >
+                  {message.content}
+                </ReactMarkdown>
               </div>
             </div>
           ))}
+          
+          {status === 'streaming' && (
+            <div className="flex flex-col items-start">
+              <div className="mb-1 text-xs text-gray-500">
+                AI助手
+              </div>
+              <div className="rounded-lg px-4 py-2 max-w-[85%] border">
+                <p className="prose prose-sm max-w-none dark:prose-invert">思考中...</p>
+              </div>
+            </div>
+          )}
           
           {error && (
             <div className="flex justify-center">
@@ -172,7 +151,7 @@ export default function Index() {
         </div>
       </div>
       
-      <form onSubmit={handleSubmit} className="p-4 border-t bg-white">
+      <form onSubmit={handleSubmit} className="p-4 border-t">
         <div className="max-w-3xl mx-auto flex gap-4">
           <input
             value={input}
@@ -192,4 +171,8 @@ export default function Index() {
       </form>
     </div>
   );
+}
+
+export default function Index() {
+  return <Chat />;
 }

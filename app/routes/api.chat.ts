@@ -1,5 +1,5 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { streamText } from 'ai';
+import { streamText,createDataStream} from 'ai';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -42,73 +42,40 @@ export async function action({ request }: { request: Request }) {
     
     const model = openrouter.languageModel(modelName);
 
-    // 调用AI并获取完整流
-    const result = await streamText({
-      model,
-      messages: formattedMessages,
-      temperature: 0.7, // 添加温度参数
-      maxTokens: 1000,  // 设置最大令牌数
+    // 使用createDataStream创建数据流
+    const dataStream = createDataStream({
+      async execute(dataStream) {
+        try {
+          console.log("开始处理AI响应流");
+          // dataStream.writeData({
+          //     type: 'json_text',
+          //     content: '{"value":"test write data"}'
+          // });
+          const result = await streamText({
+            model,
+            messages: formattedMessages,
+            temperature: 0.7,
+            maxTokens: 1000,
+            onChunk: (chunk) => {
+              console.log("收到数据块:", chunk);
+            },
+          });
+          
+          result.mergeIntoDataStream(dataStream, { sendReasoning: true });
+          console.log("流处理完成");
+        } catch (error) {
+          console.error("处理流时出错:", error);
+          throw error;
+        }
+      },
+      onError: (error: any) => {
+        console.error("数据流处理出错:", error);
+        return `处理请求时出错: ${error.message}`;
+      },
     });
 
-    // 创建一个新的ReadableStream来处理AI的响应
-    const responseStream = new TransformStream();
-    const writer = responseStream.writable.getWriter();
-
-    // 处理完整流，包括文本和思考内容
-    (async () => {
-      const encoder = new TextEncoder();
-      let isReasoningActive = false;
-      let hasContent = false;
-
-      try {
-        // 使用fullStream获取所有内容，包括思考部分
-        for await (const part of result.fullStream) {
-          let textToWrite = '';
-          
-          // 检查是否有文本内容
-          if (part.type === "text-delta" && part.textDelta) {
-            hasContent = true;
-            if (isReasoningActive) {
-              textToWrite = '</think>\n\n';
-              isReasoningActive = false;
-              await writer.write(encoder.encode(textToWrite));
-            }
-            textToWrite = part.textDelta;
-          } 
-          else if (part.type === "reasoning" && 'textDelta' in part && part.textDelta) {
-            hasContent = true;
-            if (!isReasoningActive) {
-              textToWrite = '<think>\n';
-              isReasoningActive = true;
-              await writer.write(encoder.encode(textToWrite));
-            }
-            textToWrite = part.textDelta;
-          }
-
-          if (textToWrite) {
-            await writer.write(encoder.encode(textToWrite));
-          }
-        }
-        
-        // 如果没有收到任何内容，发送一个默认消息
-        if (!hasContent) {
-          await writer.write(encoder.encode("抱歉，我无法生成回复。请尝试重新提问或使用不同的模型。"));
-        }
-        
-        // 如果流结束时仍在思考内容中，关闭思考标签
-        if (isReasoningActive) {
-          await writer.write(encoder.encode('</think>\n\n'));
-        }
-
-        await writer.close();
-      } catch (error) {
-        console.error("处理流时出错:", error);
-        writer.abort(error);
-      }
-    })();
-
-    // 返回流式响应
-    return new Response(responseStream.readable, {
+    return new Response(dataStream, {
+      status: 200,
       headers: {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
