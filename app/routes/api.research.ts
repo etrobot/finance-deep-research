@@ -55,6 +55,12 @@ async function bingSearch(query: string, limit = 5) {
 
 // 移除JSON的markdown格式
 function removeJsonMarkdown(text: string) {
+  if (!text) {
+    console.error('removeJsonMarkdown: 输入文本为空');
+    return '';
+  }
+  
+  console.log('removeJsonMarkdown 输入:', text);
   text = text.trim();
   if (text.startsWith('```json')) {
     text = text.slice(7);
@@ -66,6 +72,7 @@ function removeJsonMarkdown(text: string) {
   if (text.endsWith('```')) {
     text = text.slice(0, -3);
   }
+  console.log('removeJsonMarkdown 输出:', text.trim());
   return text.trim();
 }
 
@@ -80,6 +87,12 @@ interface QueriesResponse {
 }
 
 async function generateSerpQueries(query: string, numQueries = 3, learnings: string[] = [], dataStream: any, encoder: any) {
+  console.log('开始生成SERP查询，输入参数:', {
+    query,
+    numQueries,
+    learningsCount: learnings.length
+  });
+
   const modelName = process.env.OPENROUTER_MODEL || 'google/gemini-2.0-flash-lite-preview-02-05:free';
   const model = openrouter.languageModel(modelName);
     
@@ -101,30 +114,68 @@ ${learnings.join('\n')}` : ''}
     }
   ]}`;
 
+  console.log('生成的提示文本:', promptText);
+
   let parsedQueries: QueriesResponse = { queries: [] };
 
-  const result = await streamText({
-    model,
-    system: systemPrompt,
-    prompt: promptText,
-    onFinish: (result: any) => {
-      try {
-        const cleanText = removeJsonMarkdown(result.content);
-        parsedQueries = JSON.parse(cleanText) as QueriesResponse;
-        console.log('JSON解析成功，结果:', JSON.stringify(parsedQueries).slice(0, 100) + '...');
-      } catch (e) {
-        console.error('JSON解析失败:', e);
+  try {
+    const result = await streamText({
+      model,
+      system: systemPrompt,
+      prompt: promptText,
+      onChunk: (chunk:any)=>{
+        console.log('AI响应中:', chunk);
+      },
+      onFinish: (result: any) => {
+        console.log('AI响应完成，原始结果:', result);
+        if (!result || (!result.content && !result.text)) {
+          console.error('AI响应内容为空');
+          return;
+        }
+        
+        try {
+          const cleanText = removeJsonMarkdown(result.text || result.content);
+          console.log('清理后的文本:', cleanText);
+          parsedQueries = JSON.parse(cleanText) as QueriesResponse;
+          console.log('JSON解析成功，结果:', JSON.stringify(parsedQueries));
+        } catch (e) {
+          console.error('JSON解析失败，详细错误:', e);
+          console.error('待解析的文本:', result.text || result.content);
+        }
+      }
+    });
+    // if (result && typeof result.mergeIntoDataStream === 'function') {
+    //   result.mergeIntoDataStream(dataStream, { sendReasoning: true });
+    // } else {
+    //   console.warn('mergeIntoDataStream 不可用或不是函数');
+    // }
+    const reader = result.textStream.getReader();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      const chunk = value as unknown as {
+        [x: string]: string | undefined; type: string; textDelta?: string 
+}
+
+      const deltaContent = chunk.textDelta || chunk.content;
+      if (deltaContent) {
+        dataStream.writeData(deltaContent);
       }
     }
-  });
-  
-  result.mergeIntoDataStream(dataStream, { sendReasoning: true });
 
-  if (parsedQueries && Array.isArray(parsedQueries.queries)) {
-    return parsedQueries.queries;
+    if (parsedQueries && Array.isArray(parsedQueries.queries)) {
+      return parsedQueries.queries;
+    }
+
+    console.warn('返回默认查询，因为解析结果无效');
+    return [{ query, researchGoal: "研究用户提供的原始查询" }];
+  } catch (error) {
+    console.error('generateSerpQueries执行出错:', error);
+    return [{ query, researchGoal: "研究用户提供的原始查询" }];
   }
-
-  return [{ query, researchGoal: "研究用户提供的原始查询" }];
 }
 
 // 处理搜索结果
@@ -158,7 +209,11 @@ ${contents.join('\n\n')}
     prompt: promptText,
     onFinish: async (result: any) => {
       try {
-        const cleanText = removeJsonMarkdown(result.content);
+        if (!result || (!result.content && !result.text)) {
+          console.error('processSerpResult: AI响应内容为空');
+          return;
+        }
+        const cleanText = removeJsonMarkdown(result.text || result.content);
         const parsed = JSON.parse(cleanText);
         processedResult = {
           learnings: parsed.learnings || [],
@@ -166,7 +221,8 @@ ${contents.join('\n\n')}
         };
         console.log('JSON解析成功，结果:', JSON.stringify(processedResult).slice(0, 100) + '...');
       } catch (e) {
-        console.error('JSON解析失败:', e);
+        console.error('processSerpResult JSON解析失败:', e);
+        console.error('待解析的文本:', result.text || result.content);
       }
     }
   });
@@ -189,7 +245,7 @@ async function writeFinalReport(prompt: string, learnings: any, visitedUrls: any
   
   const systemPrompt = "你是一个专业的研究助手，擅长基于收集的信息撰写详细的研究报告。请确保报告内容完整、结构清晰。";
   
-  const promptText = `基于以下用户提示和研究发现，撰写一份详尽的研究报告。要求：
+  const promptText = `基于以下用户提示和founded发现，撰写一份详尽的研究报告。要求：
 1. 报告篇幅至少3页
 2. 包含所有重要发现
 3. 使用清晰的标题和小节
@@ -198,7 +254,7 @@ async function writeFinalReport(prompt: string, learnings: any, visitedUrls: any
 
 用户提示: ${prompt}
 
-研究发现:
+founded发现:
 ${learnings.map((l: string, i: number) => `${i + 1}. ${l}`).join('\n')}
 
 请使用Markdown格式撰写报告，包含以下结构：
