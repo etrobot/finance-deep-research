@@ -123,9 +123,6 @@ ${learnings.join('\n')}` : ''}
       model,
       system: systemPrompt,
       prompt: promptText,
-      onChunk: (chunk:any)=>{
-        console.log('AI响应中:', chunk);
-      },
       onFinish: (result: any) => {
         console.log('AI响应完成，原始结果:', result);
         if (!result || (!result.content && !result.text)) {
@@ -144,11 +141,7 @@ ${learnings.join('\n')}` : ''}
         }
       }
     });
-    // if (result && typeof result.mergeIntoDataStream === 'function') {
-    //   result.mergeIntoDataStream(dataStream, { sendReasoning: true });
-    // } else {
-    //   console.warn('mergeIntoDataStream 不可用或不是函数');
-    // }
+
     const reader = result.textStream.getReader();
 
     while (true) {
@@ -157,12 +150,12 @@ ${learnings.join('\n')}` : ''}
         break;
       }
       const chunk = value as unknown as {
-        [x: string]: string | undefined; type: string; textDelta?: string 
-}
+        type: string; textDelta?: string 
+      }
 
-      const deltaContent = chunk.textDelta || chunk.content;
+      const deltaContent = chunk.textDelta || chunk;
       if (deltaContent) {
-        dataStream.writeData(deltaContent);
+        dataStream.writeData(deltaContent.toString());
       }
     }
 
@@ -227,7 +220,22 @@ ${contents.join('\n\n')}
     }
   });
   
-  // result.mergeIntoDataStream(dataStream, { sendReasoning: true });
+  const reader = result.textStream.getReader();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      const chunk = value as unknown as {
+        type: string; textDelta?: string 
+      }
+
+      const deltaContent = chunk.textDelta || chunk;
+      if (deltaContent) {
+        dataStream.writeData(deltaContent.toString());
+      }
+    }
   
   return processedResult;
 }
@@ -271,10 +279,10 @@ ${learnings.map((l: string, i: number) => `${i + 1}. ${l}`).join('\n')}
       system: systemPrompt,
       prompt: promptText,
     });
-    result.mergeIntoDataStream(dataStream, { sendReasoning: true });
     console.log("AI模型响应成功，开始处理输出流");
         
-    
+    result.mergeIntoDataStream(dataStream, { sendReasoning: true });
+
     // 添加参考来源
     const urlsSection = `\n\n## 参考来源\n${visitedUrls.map((url: string) => `- ${url}`).join('\n')}`;
     dataStream.writeData({ type: 'text', content: urlsSection });

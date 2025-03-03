@@ -109,8 +109,10 @@ function Chat() {
                     显示思考
                   </summary>
                   <div className="mt-2 rounded-lg border px-4 py-2 text-sm text-gray-600">
-                    {/* {message.reasoning} */}
-                    {JSON.stringify(data)}
+                  {data && data.map((item, index) => (
+                      item?.toString()
+                  ))}
+                  {message.reasoning}
                   </div>
                 </details>
               )}
