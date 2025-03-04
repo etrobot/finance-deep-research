@@ -13,6 +13,7 @@
     "@ai-sdk/openai": "^1.1.14",
     "@ai-sdk/react": "^1.1.18",
     "@ai-sdk/ui-utils": "^1.1.16",
+    "@nanostores/react": "^0.8.4",
     "@openrouter/ai-sdk-provider": "^0.2.2",
     "@remix-run/node": "*",
     "@remix-run/react": "*",
@@ -21,10 +22,12 @@
     "chalk": "^5.4.1",
     "dotenv": "^16.4.7",
     "isbot": "^4.1.0",
+    "nanostores": "^0.11.4",
     "openai": "^4.28.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-markdown": "^10.0.0",
+    "react-toastify": "^11.0.5",
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
@@ -41,6 +44,7 @@
     "eslint-plugin-jsx-a11y": "^6.7.1",
     "eslint-plugin-react": "^7.33.2",
     "eslint-plugin-react-hooks": "^4.6.0",
+    "js-cookie": "^3.0.5",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.4",
     "tsx": "^4.19.3",
