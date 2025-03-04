@@ -1,8 +1,9 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { streamText,createDataStream } from 'ai';
-import dotenv from 'dotenv';
-
-dotenv.config();
+import { streamText,createDataStream,DataStreamWriter } from 'ai';
+import { removeJsonMarkdown } from '~/utils/txt2Json';
+import { bingSearch, QueriesResponse } from '~/utils/bingSerp';
+import { createScopedLogger } from '~/utils/logger';
+const logger = createScopedLogger('research');
 
 // 创建OpenRouter客户端，并启用reasoning
 const openrouter = createOpenRouter({
@@ -10,84 +11,9 @@ const openrouter = createOpenRouter({
   extraBody: { include_reasoning: true }, // 在客户端配置中启用思考内容
 });
 
-// Bing搜索API配置
-const BING_SEARCH_API_KEY = process.env.BING_SEARCH_API_KEY || 'YOUR_BING_SEARCH_API_KEY';
-const BING_SEARCH_ENDPOINT = 'https://api.bing.microsoft.com/v7.0/search';
 
-// 搜索函数 - 使用Bing API
-async function bingSearch(query: string, limit = 5) {
-  try {
-    const params = new URLSearchParams({
-      q: query,
-      count: limit.toString(),
-      responseFilter: 'Webpages',
-      textFormat: 'HTML'
-    });
-
-    const response = await fetch(`${BING_SEARCH_ENDPOINT}?${params}`, {
-      headers: {
-        'Ocp-Apim-Subscription-Key': BING_SEARCH_API_KEY
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(`Bing API 请求失败: ${response.status}`);
-    }
-
-    const data = await response.json();
-    
-    if (!data.webPages || !data.webPages.value) {
-      return [];
-    }
-
-    // 将结果转换为适合处理的格式
-    return data.webPages.value.map((page: any) => ({
-      url: page.url,
-      content: page.snippet,
-      title: page.name,
-    }));
-  } catch (error) {
-    console.error("Bing搜索出错:", error);
-    return [];
-  }
-}
-
-
-// 移除JSON的markdown格式
-function removeJsonMarkdown(text: string) {
-  if (!text) {
-    console.error('removeJsonMarkdown: 输入文本为空');
-    return '';
-  }
-  
-  console.log('removeJsonMarkdown 输入:', text);
-  text = text.trim();
-  if (text.startsWith('```json')) {
-    text = text.slice(7);
-  } else if (text.startsWith('json')) {
-    text = text.slice(4);
-  } else if (text.startsWith('```')) {
-    text = text.slice(3);
-  }
-  if (text.endsWith('```')) {
-    text = text.slice(0, -3);
-  }
-  console.log('removeJsonMarkdown 输出:', text.trim());
-  return text.trim();
-}
-
-// 生成SERP查询
-interface SearchQuery {
-  query: string;
-  researchGoal: string;
-}
-
-interface QueriesResponse {
-  queries: SearchQuery[];
-}
-
-async function generateSerpQueries(query: string, numQueries = 3, learnings: string[] = [], dataStream: any, encoder: any) {
-  console.log('开始生成SERP查询，输入参数:', {
+async function generateSerpQueries(query: string, numQueries = 3, learnings: string[] = [], dataStream: DataStreamWriter) {
+  logger.trace('开始生成SERP查询，输入参数:', {
     query,
     numQueries,
     learningsCount: learnings.length
@@ -114,7 +40,7 @@ ${learnings.join('\n')}` : ''}
     }
   ]}`;
 
-  console.log('生成的提示文本:', promptText);
+  logger.trace('生成的提示文本:', promptText);
 
   let parsedQueries: QueriesResponse = { queries: [] };
 
@@ -124,20 +50,20 @@ ${learnings.join('\n')}` : ''}
       system: systemPrompt,
       prompt: promptText,
       onFinish: (result: any) => {
-        console.log('AI响应完成，原始结果:', result);
+        logger.trace('AI响应完成，原始结果:', result);
         if (!result || (!result.content && !result.text)) {
-          console.error('AI响应内容为空');
+          logger.error('AI响应内容为空');
           return;
         }
         
         try {
           const cleanText = removeJsonMarkdown(result.text || result.content);
-          console.log('清理后的文本:', cleanText);
+          logger.trace('清理后的文本:', cleanText);
           parsedQueries = JSON.parse(cleanText) as QueriesResponse;
-          console.log('JSON解析成功，结果:', JSON.stringify(parsedQueries));
+          logger.trace('JSON解析成功，结果:', JSON.stringify(parsedQueries));
         } catch (e) {
-          console.error('JSON解析失败，详细错误:', e);
-          console.error('待解析的文本:', result.text || result.content);
+          logger.error('JSON解析失败，详细错误:', e);
+          logger.error('待解析的文本:', result.text || result.content);
         }
       }
     });
@@ -166,13 +92,12 @@ ${learnings.join('\n')}` : ''}
     console.warn('返回默认查询，因为解析结果无效');
     return [{ query, researchGoal: "研究用户提供的原始查询" }];
   } catch (error) {
-    console.error('generateSerpQueries执行出错:', error);
+    logger.error('generateSerpQueries执行出错:', error);
     return [{ query, researchGoal: "研究用户提供的原始查询" }];
   }
 }
 
-// 处理搜索结果
-async function processSerpResult(query: string, results: any, numLearnings = 3, dataStream: any, encoder: any) {
+async function processSerpResult(query: string, results: any, numLearnings = 3, dataStream: DataStreamWriter) {
   if (!results || results.length === 0) {
     return { learnings: [], followUpQuestions: [] };
   }
@@ -203,7 +128,7 @@ ${contents.join('\n\n')}
     onFinish: async (result: any) => {
       try {
         if (!result || (!result.content && !result.text)) {
-          console.error('processSerpResult: AI响应内容为空');
+          logger.error('processSerpResult: AI响应内容为空');
           return;
         }
         const cleanText = removeJsonMarkdown(result.text || result.content);
@@ -212,10 +137,10 @@ ${contents.join('\n\n')}
           learnings: parsed.learnings || [],
           followUpQuestions: parsed.followUpQuestions || []
         };
-        console.log('JSON解析成功，结果:', JSON.stringify(processedResult).slice(0, 100) + '...');
+        logger.trace('JSON解析成功，结果:', JSON.stringify(processedResult).slice(0, 100) + '...');
       } catch (e) {
-        console.error('processSerpResult JSON解析失败:', e);
-        console.error('待解析的文本:', result.text || result.content);
+        logger.error('processSerpResult JSON解析失败:', e);
+        logger.error('待解析的文本:', result.text || result.content);
       }
     }
   });
@@ -241,8 +166,8 @@ ${contents.join('\n\n')}
 }
 
 // 生成最终报告
-async function writeFinalReport(prompt: string, learnings: any, visitedUrls: any, dataStream: any, encoder: any) {
-  console.log("开始生成最终报告，输入数据:", {
+async function writeFinalReport(prompt: string, learnings: any, visitedUrls: any, dataStream: DataStreamWriter) {
+  logger.trace("开始生成最终报告，输入数据:", {
     promptLength: prompt.length,
     learningsCount: learnings.length,
     urlsCount: visitedUrls.length
@@ -262,16 +187,16 @@ async function writeFinalReport(prompt: string, learnings: any, visitedUrls: any
 
 用户提示: ${prompt}
 
-founded发现:
+发现:
 ${learnings.map((l: string, i: number) => `${i + 1}. ${l}`).join('\n')}
 
-请使用Markdown格式撰写报告，包含以下结构：
+撰写报告，包含以下结构：
 1. 研究概述
 2. 主要发现
 3. 详细分析
 4. 结论和建议`;
 
-  console.log("准备调用AI模型生成报告...");
+  logger.trace("准备调用AI模型生成报告...");
   
   try {
     const result = await streamText({
@@ -279,7 +204,7 @@ ${learnings.map((l: string, i: number) => `${i + 1}. ${l}`).join('\n')}
       system: systemPrompt,
       prompt: promptText,
     });
-    console.log("AI模型响应成功，开始处理输出流");
+    logger.trace("AI模型响应成功，开始处理输出流");
         
     result.mergeIntoDataStream(dataStream, { sendReasoning: true });
 
@@ -289,7 +214,7 @@ ${learnings.map((l: string, i: number) => `${i + 1}. ${l}`).join('\n')}
     
     return; // 不需要返回内容，因为已经写入流中
   } catch (error) {
-    console.error("生成报告时发生错误:", error);
+    logger.error("生成报告时发生错误:", error);
     throw error;
   }
 }
@@ -301,7 +226,7 @@ async function deepResearch(
   depth = 1,
   learnings: string[] = [],
   visitedUrls: string[] = [],
-  dataStream: any,
+  dataStream: DataStreamWriter,
   encoder: any,
   currentDepth = 0
 ) {
@@ -312,7 +237,7 @@ async function deepResearch(
     }
     
     // 生成搜索查询
-    const serpQueries = await generateSerpQueries(query, breadth, learnings, dataStream, encoder);
+    const serpQueries = await generateSerpQueries(query, breadth, learnings, dataStream);
     
     let allLearnings = [...learnings];
     let allUrls = [...visitedUrls];
@@ -334,7 +259,6 @@ async function deepResearch(
           searchResults,
           3,
           dataStream,
-          encoder
         );
         
         // 添加新的发现
@@ -366,7 +290,7 @@ async function deepResearch(
           allUrls = [...new Set([...allUrls, ...deeperResults.visitedUrls])];
         }
       } catch (error) {
-        console.error(`处理查询时出错: ${serpQuery.query}:`, error);
+        logger.error(`处理查询时出错: ${serpQuery.query}:`, error);
       }
     }
     
@@ -375,7 +299,7 @@ async function deepResearch(
     allUrls = [...new Set(allUrls)];
     return { learnings: allLearnings, visitedUrls: allUrls };
   } catch (error) {
-    console.error("深度研究过程出错:", error);
+    logger.error("深度研究过程出错:", error);
     return { learnings, visitedUrls };
   }
 }
@@ -402,13 +326,13 @@ export async function action({ request }: { request: Request }) {
     }
 
     const query = lastUserMessage.content;
-    console.log("接收到的研究查询:", query);
-    console.log("研究广度:", breadth, "研究深度:", depth);
+    logger.trace("接收到的研究查询:", query);
+    logger.trace("研究广度:", breadth, "研究深度:", depth);
 
     const dataStream = createDataStream({
       async execute(dataStream) {
         try {
-          console.log("开始研究流程");
+          logger.trace("开始研究流程");
           
           // 执行深度研究
           const research = await deepResearch(
@@ -421,25 +345,24 @@ export async function action({ request }: { request: Request }) {
             new TextEncoder()
           );
 
-          console.log("深度研究完成，发现数量:", research.learnings.length);
+          logger.trace("深度研究完成，发现数量:", research.learnings.length);
 
           // 生成最终报告
           await writeFinalReport(
             query,
             research.learnings,
             research.visitedUrls,
-            dataStream,  // 直接传入dataStream
-            new TextEncoder()
+            dataStream,
           );
 
-          console.log("研究流程全部完成");
+          logger.trace("研究流程全部完成");
         } catch (error) {
-          console.error("处理研究流程时出错:", error);
+          logger.error("处理研究流程时出错:", error);
           throw error;
         }
       },
       onError: (error: any) => {
-        console.error("数据流处理出错:", error);
+        logger.error("数据流处理出错:", error);
         return `处理请求时出错: ${error.message}`;
       },
     });
@@ -452,7 +375,7 @@ export async function action({ request }: { request: Request }) {
       },
     });
   } catch (error) {
-    console.error("API处理出错:", error);
+    logger.error("API处理出错:", error);
     return new Response(
       JSON.stringify({
         error: "处理请求时出错",
