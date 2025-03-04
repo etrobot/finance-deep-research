@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useChatHistory } from '~/lib/persistence';
 import { useChat } from '@ai-sdk/react';
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -6,10 +7,11 @@ import remarkGfm from 'remark-gfm'
 export function Chat() {
     const [input, setInput] = useState('');
     const [error, setError] = useState<Error | null>(null);
+    const { ready, initialMessages, storeMessageHistory } = useChatHistory();
 
-    // 使用 useChat hook 替代直接 fetch
+    // 使用 useChat hook，并传入 initialMessages
     const { data, append, messages, status } = useChat({
-        api: '/api/research',
+        initialMessages, // 使用 useChatHistory 提供的 initialMessages
         onError: (err) => {
             console.error("聊天请求出错:", err);
             // 添加更详细的错误日志
@@ -28,29 +30,26 @@ export function Chat() {
             console.log("聊天响应完成，消息详情:", {
                 message
             });
+            // 在消息完成时存储消息历史
+            storeMessageHistory(messages);
         }
     });
 
-    const sendMessage = (message: string) => {
+    const sendMessage = async (message: string) => {
         if (!message.trim()) return;
 
         console.log("准备发送消息:", message);
-        console.log("当前状态:", status);
         setError(null);
 
         try {
-            // 添加更详细的请求日志
-            console.log("发送消息前的状态:", {
-                messageContent: message,
-                currentStatus: status,
-                currentMessages: messages
-            });
-
-            append({
+            await append({
                 role: 'user',
                 content: message
             });
-
+            
+            // 在发送消息后存储消息历史
+            await storeMessageHistory(messages);
+            
             console.log("消息发送成功");
         } catch (err) {
             console.error("发送消息时出错:", err);
@@ -78,6 +77,13 @@ export function Chat() {
 
     // 判断是否正在加载
     const isLoading = status === 'streaming' || status === 'submitted';
+
+    // Loading state handling
+    if (!ready) {
+        return <div className="flex justify-center items-center h-screen">
+            <div>加载中...</div>
+        </div>;
+    }
 
     return (
         <div className="flex flex-col h-screen">
