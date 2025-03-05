@@ -1,8 +1,5 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { streamText,createDataStream} from 'ai';
-import dotenv from 'dotenv';
-
-dotenv.config();
 
 // 创建OpenRouter客户端，并启用reasoning
 const openrouter = createOpenRouter({
